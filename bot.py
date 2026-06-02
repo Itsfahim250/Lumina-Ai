@@ -85,7 +85,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         for i, key in enumerate(API_KEYS):
-            # Key এর কিছু অংশ হাইড করে দেখানো (সিকিউরিটির জন্য)
             masked = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else key
             keyboard.append([InlineKeyboardButton(f"Delete: {masked}", callback_data=f"del_{i}")])
         
@@ -94,17 +93,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Project settings":
-        # Render-এ হোস্ট করলে RENDER_EXTERNAL_URL অটোমেটিকভাবে সেট হয়
         base_url = os.getenv("RENDER_EXTERNAL_URL", "http://127.0.0.1:8000")
-        
         msg = (
             f"⚙️ **Project Settings & API Endpoints**\n\n"
             f"**Base URL:**\n`{base_url}`\n\n"
             f"**Supported Models:**\n"
             f"1. `llama-3.1-8b-instant`\n"
             f"2. `gemma2-9b-it`\n\n"
-            f"🔹 **GET Request Example:**\n"
-            f"`{base_url}/api/llama-3.1-8b-instant/chat?prompt=Hi`\n\n"
             f"🔹 **POST Request Example:**\n"
             f"URL: `{base_url}/api/gemma2-9b-it/chat`\n"
             f"Body (JSON): `{{\"prompt\": \"Hello AI\"}}`"
@@ -112,7 +107,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # যদি ইউজার API Key ইনপুট দেয়
     if USER_STATES.get(chat_id) == "AWAITING_KEY":
         new_key = text.strip()
         if new_key not in API_KEYS:
@@ -122,7 +116,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ এই Key টি আগে থেকেই অ্যাড করা আছে।")
         
-        USER_STATES[chat_id] = None # স্টেট ক্লিয়ার করা
+        USER_STATES[chat_id] = None
         return
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,19 +146,16 @@ bot_app.add_handler(CallbackQueryHandler(button_callback))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # FastAPI সার্ভার অন হওয়ার সাথে টেলিগ্রাম বট চালু হবে
     await bot_app.initialize()
     await bot_app.start()
     await bot_app.updater.start_polling()
     yield
-    # FastAPI সার্ভার বন্ধ হওয়ার সময় টেলিগ্রাম বট অফ হবে
     await bot_app.updater.stop()
     await bot_app.stop()
     await bot_app.shutdown()
 
 app = FastAPI(lifespan=lifespan)
 
-# ফ্রন্টএন্ড থেকে API কল করার জন্য CORS অ্যাড করা হলো
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -175,7 +166,7 @@ app.add_middleware(
 
 async def fetch_groq_response(model: str, prompt: str):
     if not API_KEYS:
-        return {"error": "No API keys configured on backend. Add keys via Telegram Bot."}
+        return {"error": "No API keys configured. Add keys via Telegram Bot."}
 
     if model not in MODELS:
         return {"error": f"Invalid model. Supported models are: {', '.join(MODELS)}"}
@@ -184,12 +175,12 @@ async def fetch_groq_response(model: str, prompt: str):
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 1024,
+        "max_tokens": 8192, # <--- ফিক্স: লিমিট বাড়িয়ে 8192 করা হয়েছে যাতে কোড কাটা না পড়ে
     }
 
-    timeout = aiohttp.ClientTimeout(total=60)
+    # <--- ফিক্স: টাইমআউট 60 থেকে বাড়িয়ে 120 সেকেন্ড করা হয়েছে বড় রিকোয়েস্টের জন্য
+    timeout = aiohttp.ClientTimeout(total=120) 
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # যতগুলো API Key আছে, সবগুলোর উপর লুপ চলবে
         for key in API_KEYS:
             headers = {
                 "Authorization": f"Bearer {key}",
@@ -201,14 +192,13 @@ async def fetch_groq_response(model: str, prompt: str):
                         data = await resp.json()
                         return {"response": data["choices"][0]["message"]["content"]}
                     else:
-                        # লিমিট শেষ বা এরর আসলে পরের Key ট্রাই করবে
-                        continue
-            except Exception:
-                # নেটওয়ার্ক এরর হলেও পরের Key ট্রাই করবে
-                continue
+                        print(f"API Error ({resp.status}): {await resp.text()}")
+                        continue # এরর আসলে বা লিমিট ক্রস করলে পরের Key ট্রাই করবে
+            except Exception as e:
+                print(f"Network Timeout/Error: {e}")
+                continue # নেটওয়ার্ক টাইমআউট হলেও পরের Key দিয়ে চেষ্টা করবে
     
-    # যদি কোনো Key দিয়েই কাজ না হয়
-    return {"error": "All API keys failed or rate limits exceeded."}
+    return {"error": "All API keys failed or rate limits exceeded. Please try again."}
 
 @app.get("/api/{model_name}/chat")
 async def chat_get(model_name: str, prompt: str):
@@ -226,10 +216,9 @@ async def chat_post(model_name: str, req: ChatRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Backend is running. Open your Telegram Bot to manage Settings."}
+    return {"message": "Backend is running flawlessly. Open your Telegram Bot to manage Settings."}
 
 if __name__ == "__main__":
     import uvicorn
-    # Render ডিফল্টভাবে PORT environment variable প্রোভাইড করে
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
