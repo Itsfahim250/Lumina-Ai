@@ -3,4 +3,4 @@ uvicorn
 python-telegram-bot
 aiohttp
 python-dotenv
-pydantic
+python-multipart
